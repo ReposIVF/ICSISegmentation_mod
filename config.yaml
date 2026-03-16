@@ -1,0 +1,54 @@
+# ─────────────────────────────────────────────
+#  Project Configuration
+# ─────────────────────────────────────────────
+
+# ── Paths ──────────────────────────────────────
+paths:
+  videos_dir: "./test_videos"          # Folder scanned for videos in batch mode
+  videos_results_dir: "./video_results"
+  data_results_dir: "./data_results"
+  yolo_model: "./input_models/best.pt"
+  tabtransformer_model: "./input_models/best_model.pth"
+  tracker_config: "./input_models/botsort.yaml"
+  scalers:
+    morpho: "./scalers/standardizer_morpho_data.json"
+    motility: "./scalers/standardizer_sperm_data.json"
+    soft_filters: "./scalers/soft_filters.json"
+
+# ── Tracking ───────────────────────────────────
+tracking:
+  padding: 10                          # Pixel padding around bounding boxes
+  score_window_size: 15                # Compute score every N frames
+
+# ── Ranking display ────────────────────────────
+ranking:
+  update_interval: 60                  # Refresh top-3 display every N frames
+  change_threshold: 0.08               # Min score diff to trigger a ranking update
+  smoothing_alpha: 0.2                 # EMA factor (lower = smoother)
+
+# ── TabTransformer architecture ────────────────
+tabtransformer:
+  num_continuous: 8
+  dim: 32
+  dim_out: 1
+  depth: 6
+  heads: 8
+  attn_dropout: 0.1
+  ff_dropout: 0.1
+  mlp_hidden_mults: [4, 2]
+
+# ── User prompt choices ────────────────────────
+prompt_options:
+  clinics:
+    - aria
+    - boston-ivf
+    - ivi
+    - nadiya
+    - nhfc_cdmx
+    - nhfc_gdl
+  magnifications:
+    - "10X"
+    - "20X"
+  solution_percentages:
+    - "7%"
+    - "10%"
