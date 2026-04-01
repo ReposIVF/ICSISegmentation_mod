@@ -43,11 +43,11 @@ class RankingState:
         Returns:
             List of up to 3 (track_id, smoothed_score) tuples.
         """
-        # Gather raw scores for visible sperm only
+        # Gather raw scores for all tracked sperm (normalize globally, not just visible)
         raw_scores = {
             tid: data["current_score"]
             for tid, data in mask_info_dict.items()
-            if data["current_score"] > 0 and tid in current_track_ids
+            if data["current_score"] > 0
         }
 
         # Normalize relative to visible sample
