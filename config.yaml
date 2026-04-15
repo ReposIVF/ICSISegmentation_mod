@@ -19,6 +19,7 @@ paths:
 tracking:
   padding: 10                          # Pixel padding around bounding boxes
   score_window_size: 15                # Compute score every N frames
+  conf: 0.7                            # YOLO detection confidence threshold (higher = fewer detections)
 
 # ── Ranking display ────────────────────────────
 ranking:

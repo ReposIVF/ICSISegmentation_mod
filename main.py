@@ -5,13 +5,14 @@ Batch mode: all video files found in config.paths.videos_dir are processed
 sequentially. Prompts for clinic, magnification, and solution percentage are
 asked once per video so different setups can coexist in the same folder.
 
-Single-video mode: put only one video in the folder, or set videos_dir to
-point directly at a folder with that one file.
+Single-video mode:
+    python main.py --video /path/to/video.mp4
 
-Usage:
+Batch mode:
     python main.py
 """
 import os
+import argparse
 import cv2
 
 from data_io.config_loader import load_config, load_scalers, load_filters, resolve_scaler_params
@@ -138,6 +139,10 @@ def process_video(
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
+    parser = argparse.ArgumentParser(description="Sperm tracking and scoring pipeline.")
+    parser.add_argument("--video", type=str, default=None, help="Path to a specific video file to process.")
+    args = parser.parse_args()
+
     # Load config and shared assets (done once for all videos)
     cfg = load_config("config.yaml")
     device = get_device()
@@ -152,11 +157,16 @@ def main():
     yolo_model       = load_yolo(cfg["paths"]["yolo_model"])
     blastocyst_model = load_tabtransformer(cfg["paths"]["tabtransformer_model"], cfg, device)
 
-    # Discover videos
-    video_paths = discover_videos(cfg["paths"]["videos_dir"])
-    if not video_paths:
-        print(f"No videos found in: {cfg['paths']['videos_dir']}")
-        return
+    if args.video:
+        if not os.path.isfile(args.video):
+            print(f"Error: video file not found: {args.video}")
+            return
+        video_paths = [args.video]
+    else:
+        video_paths = discover_videos(cfg["paths"]["videos_dir"])
+        if not video_paths:
+            print(f"No videos found in: {cfg['paths']['videos_dir']}")
+            return
 
     print(f"\nFound {len(video_paths)} video(s) to process.")
 

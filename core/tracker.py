@@ -97,6 +97,7 @@ def run_tracking_loop(
     tracker_config = cfg["paths"]["tracker_config"]
     padding = cfg["tracking"]["padding"]
     score_window = cfg["tracking"]["score_window_size"]
+    conf = cfg["tracking"].get("conf", 0.5)
     ranking_cfg = cfg["ranking"]
 
     mask_info_dict: dict = {}
@@ -122,6 +123,7 @@ def run_tracking_loop(
             show_labels=True,
             show=False,
             classes=0,
+            conf=conf,
         )
 
         if results[0].boxes and results[0].boxes.id is not None:
@@ -147,8 +149,14 @@ def run_tracking_loop(
             x2 = min(int(x_max * mask_w) + padding - 4, mask_w)
             y2 = min(int(y_max * mask_h) + padding + 4, mask_h)
 
+            if x1 >= x2 or y1 >= y2:
+                continue
+
             region = mask[y1:y2, x1:x2]
             frame_region = frame[y1:y2, x1:x2]
+
+            if region.size == 0 or frame_region.size == 0:
+                continue
 
             gray_region = (
                 cv2.cvtColor(frame_region, cv2.COLOR_BGR2GRAY)

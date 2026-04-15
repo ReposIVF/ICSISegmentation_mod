@@ -19,24 +19,24 @@ from transform.power_transform_custom import yeo_johnson_transform, standardize
 
 # ── Velocity metrics ──────────────────────────────────────────────────────────
 
-def compute_vsl(positions: list, fps: int) -> float:
-    """Straight-Line Velocity: displacement from first to last position."""
+def compute_vsl(positions: list, fps: int, video_width: int = 1, video_height: int = 1) -> float:
+    """Straight-Line Velocity: displacement from first to last position (in pixels/s)."""
     if len(positions) < 2:
         return 0.0
-    x_i, y_i = positions[0]["posX"], positions[0]["posY"]
-    x_f, y_f = positions[-1]["posX"], positions[-1]["posY"]
+    x_i, y_i = positions[0]["posX"] * video_width, positions[0]["posY"] * video_height
+    x_f, y_f = positions[-1]["posX"] * video_width, positions[-1]["posY"] * video_height
     return dist.euclidean((x_i, y_i), (x_f, y_f)) / len(positions) * fps
 
 
-def compute_vcl(positions: list, fps: int, jumps: int = 1) -> float:
-    """Curvilinear Velocity: mean frame-to-frame displacement."""
+def compute_vcl(positions: list, fps: int, video_width: int = 1, video_height: int = 1, jumps: int = 1) -> float:
+    """Curvilinear Velocity: mean frame-to-frame displacement (in pixels/s)."""
     n = len(positions)
     if n < 2:
         return 0.0
     distances = [
         dist.euclidean(
-            (positions[step - jumps]["posX"], positions[step - jumps]["posY"]),
-            (positions[step]["posX"],         positions[step]["posY"]),
+            (positions[step - jumps]["posX"] * video_width, positions[step - jumps]["posY"] * video_height),
+            (positions[step]["posX"] * video_width,         positions[step]["posY"] * video_height),
         )
         for step in range(jumps, n, jumps)
     ]
@@ -224,15 +224,21 @@ def compute_score(
     device: str,
     video_width: int,
     video_height: int,
+    full_positions: list | None = None,
 ) -> float:
     """
     Compute a blastocyst score for a sperm given its positions and morphology means.
     Returns -1 if the sperm is filtered out or an error occurs.
 
+    `positions` is used for velocity/HMP computation (may be a short window).
+    `full_positions` is used for the static filter check — pass the full track
+    history so the 30-frame minimum is reachable even when scoring on a short window.
+    If omitted, falls back to `positions`.
+
     Used by both the live snapshot scorer and the final post-processing pass.
     """
-    vsl = compute_vsl(positions, fps)
-    vcl = compute_vcl(positions, fps)
+    vsl = compute_vsl(positions, fps, video_width, video_height)
+    vcl = compute_vcl(positions, fps, video_width, video_height)
     hmp = compute_hmp(positions, fps)
 
     sta_vsl, sta_vcl, sta_hmp = standardize_motility(vsl, vcl, hmp, motility_params)
@@ -251,8 +257,9 @@ def compute_score(
     if filter_cfg["hard_filters_enabled"] and check_hard_filters(all_sta, filter_cfg["hard_filters"]):
         return -1
 
+    static_positions = full_positions if full_positions is not None else positions
     if filter_cfg["static_filter_enabled"] and check_static_sperm(
-        positions, filter_cfg["static_filter"], video_width, video_height
+        static_positions, filter_cfg["static_filter"], video_width, video_height
     ):
         return -1
 
@@ -318,6 +325,7 @@ def score_snapshot(
         device=device,
         video_width=video_width,
         video_height=video_height,
+        full_positions=track_data["Positions"],
     )
 
 
@@ -361,8 +369,8 @@ def post_process(
             except TypeError:
                 feature_means[f"{feature}_mean"] = np.nan
 
-        vsl = compute_vsl(info["Positions"], fps)
-        vcl = compute_vcl(info["Positions"], fps)
+        vsl = compute_vsl(info["Positions"], fps, video_width, video_height)
+        vcl = compute_vcl(info["Positions"], fps, video_width, video_height)
         hmp = compute_hmp(info["Positions"], fps)
 
         if morpho_params is not None and motility_params is not None:
