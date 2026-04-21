@@ -6,3 +6,5 @@ video_results
 .venv
 tmp
 */__pycache__
+__pycache__
+logs

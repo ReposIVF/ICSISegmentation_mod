@@ -4,9 +4,12 @@ Main video tracking loop.
 Responsibilities:
   - Run YOLO frame-by-frame
   - Extract morphological features from each detected mask
+  - Validate frame and feature quality
+  - Refine segmentation masks for better accuracy
   - Trigger live score snapshots every SCORE_WINDOW_SIZE frames
   - Delegate ranking and annotation to core.ranking
   - Write annotated frames to the VideoWriter
+  - Log pipeline metrics and quality issues
 """
 import math
 import cv2
@@ -14,6 +17,10 @@ import numpy as np
 
 from core.scorer import score_snapshot
 from core.ranking import RankingState, draw_ranking
+from utils.logger import get_logger, PipelineMetrics
+from utils.frame_validation import validate_frame_quality, get_frame_quality_metrics
+from utils.feature_validation import validate_morpho_features
+from utils.mask_refinement import refine_mask, MaskRefinementConfig, compute_mask_quality_metrics
 
 
 def extract_morpho_features(largest_contour, box, mask) -> dict:
@@ -89,11 +96,14 @@ def run_tracking_loop(
     cfg: dict,
 ) -> dict:
     """
-    Run the full frame-by-frame YOLO tracking loop.
+    Run the full frame-by-frame YOLO tracking loop with quality validation and logging.
 
     Returns:
         mask_info_dict : {track_id: sperm_data_dict} accumulated across all frames.
     """
+    logger = get_logger()
+    metrics = PipelineMetrics()
+    
     tracker_config = cfg["paths"]["tracker_config"]
     padding = cfg["tracking"]["padding"]
     score_window = cfg["tracking"]["score_window_size"]
@@ -107,24 +117,59 @@ def run_tracking_loop(
         smoothing_alpha=ranking_cfg["smoothing_alpha"],
     )
 
+    # ── Mask refinement configuration ──
+    mask_refine_cfg = MaskRefinementConfig(
+        enable_close=True,
+        close_kernel_size=3,
+        close_iterations=1,
+        enable_open=True,
+        open_kernel_size=3,
+        open_iterations=1,
+        enable_fill_holes=True,
+        min_hole_area=10,
+    )
+
     frame_number = 0
+    prev_frame = None
+
+    logger.info(f"Starting tracking loop: {width}x{height} @ {fps} fps")
+    logger.info(f"Detection confidence threshold: {conf}")
 
     while cap.isOpened():
         success, frame = cap.read()
         if not success:
             break
         frame_number += 1
+        metrics.frame_count += 1
 
-        results = yolo_model.track(
-            frame,
-            tracker=tracker_config,
-            persist=True,
-            show_boxes=False,
-            show_labels=True,
-            show=False,
-            classes=0,
-            conf=conf,
+        # ── Frame quality validation ──
+        frame_quality = validate_frame_quality(
+            frame, prev_frame=prev_frame, frame_number=frame_number, verbose=False
         )
+        
+        if not frame_quality.is_valid:
+            for issue in frame_quality.issues:
+                metrics.log_frame_quality_issue(
+                    frame_number, issue["type"], issue["severity"], issue["details"]
+                )
+        
+        prev_frame = frame.copy()
+
+        # ── YOLO Tracking ──
+        try:
+            results = yolo_model.track(
+                frame,
+                tracker=tracker_config,
+                persist=True,
+                show_boxes=False,
+                show_labels=True,
+                show=False,
+                classes=0,
+                conf=conf,
+            )
+        except Exception as e:
+            logger.error(f"YOLO tracking failed on frame {frame_number}: {e}")
+            continue
 
         if results[0].boxes and results[0].boxes.id is not None:
             boxes       = results[0].boxes.xyxyn.cpu().numpy()
@@ -136,6 +181,9 @@ def run_tracking_loop(
             boxes = track_ids = confidences = masks = cls = []
 
         annotated_frame = results[0].plot(boxes=False)
+        
+        metrics.detections_per_frame.append(len(track_ids))
+        metrics.total_detections += len(track_ids)
 
         for box, track_id, mask, class_id, confidence in zip(boxes, track_ids, masks, cls, confidences):
             if class_id != 0:
@@ -150,13 +198,26 @@ def run_tracking_loop(
             y2 = min(int(y_max * mask_h) + padding + 4, mask_h)
 
             if x1 >= x2 or y1 >= y2:
+                logger.debug(f"Frame {frame_number}, sperm {track_id}: Invalid region bounds")
                 continue
 
             region = mask[y1:y2, x1:x2]
             frame_region = frame[y1:y2, x1:x2]
 
             if region.size == 0 or frame_region.size == 0:
+                logger.debug(f"Frame {frame_number}, sperm {track_id}: Empty region/frame")
                 continue
+
+            # ── Mask refinement ──
+            try:
+                region_refined = refine_mask(region, mask_refine_cfg)
+                quality_metrics = compute_mask_quality_metrics(region, region_refined)
+                logger.debug(
+                    f"Mask refinement: id={track_id}, Dice={quality_metrics['dice_coefficient']:.3f}"
+                )
+            except Exception as e:
+                logger.warning(f"Mask refinement failed for sperm {track_id}: {e}")
+                region_refined = region
 
             gray_region = (
                 cv2.cvtColor(frame_region, cv2.COLOR_BGR2GRAY)
@@ -164,8 +225,9 @@ def run_tracking_loop(
                 else frame_region
             )
 
-            contours, _ = cv2.findContours(region, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            contours, _ = cv2.findContours(region_refined, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             if not contours:
+                logger.debug(f"Frame {frame_number}, sperm {track_id}: No contours found")
                 continue
 
             largest_contour = max(contours, key=cv2.contourArea)
@@ -182,44 +244,63 @@ def run_tracking_loop(
                 }
 
             mask_info_dict[track_id]["frame_count"] += 1
+            metrics.log_detection(track_id, confidence)
 
             center_x = (x_min + x_max) / 2
             center_y = (y_min + y_max) / 2
-            mask_binary = region > 0
+            mask_binary = region_refined > 0
             mean_brightness = (
                 np.mean(gray_region[mask_binary])
-                if gray_region.shape == region.shape and np.any(mask_binary)
+                if gray_region.shape == region_refined.shape and np.any(mask_binary)
                 else -1
             )
 
-            mask_info_dict[track_id]["Positions"].append({
+            position_data = {
                 "posX": center_x,
                 "posY": center_y,
                 "MeanBrightness": mean_brightness,
-            })
+            }
+            mask_info_dict[track_id]["Positions"].append(position_data)
 
-            frame_info = extract_morpho_features(largest_contour, box, mask)
+            # ── Extract and validate morpho features ──
+            frame_info = extract_morpho_features(largest_contour, box, region_refined)
             frame_info["frame"] = cap.get(cv2.CAP_PROP_POS_FRAMES)
+            
+            # Validate features
+            feature_validation = validate_morpho_features(frame_info)
+            if not feature_validation.is_valid:
+                logger.warning(
+                    f"Morpho feature validation failed for sperm {track_id}: "
+                    f"{len(feature_validation.failures)} issue(s)"
+                )
+                for failure in feature_validation.failures:
+                    metrics.log_feature_validation_failure(
+                        track_id, failure["feature"], failure["reason"]
+                    )
+            
             mask_info_dict[track_id]["data"].append(frame_info)
 
             # Live score snapshot
             if morpho_params is not None and motility_params is not None:
                 frame_count = mask_info_dict[track_id]["frame_count"]
                 if frame_count >= score_window and frame_count % score_window == 0:
-                    snap = score_snapshot(
-                        track_data=mask_info_dict[track_id],
-                        window_size=score_window,
-                        fps=fps,
-                        morpho_params=morpho_params,
-                        motility_params=motility_params,
-                        filter_cfg=filter_cfg,
-                        model=blastocyst_model,
-                        device=device,
-                        video_width=width,
-                        video_height=height,
-                    )
-                    if snap != -1:
-                        mask_info_dict[track_id]["score_history"].append(snap)
+                    try:
+                        snap = score_snapshot(
+                            track_data=mask_info_dict[track_id],
+                            window_size=score_window,
+                            fps=fps,
+                            morpho_params=morpho_params,
+                            motility_params=motility_params,
+                            filter_cfg=filter_cfg,
+                            model=blastocyst_model,
+                            device=device,
+                            video_width=width,
+                            video_height=height,
+                        )
+                        if snap != -1:
+                            mask_info_dict[track_id]["score_history"].append(snap)
+                    except Exception as e:
+                        logger.error(f"Score computation failed for sperm {track_id}: {e}")
 
                 if mask_info_dict[track_id]["score_history"]:
                     mask_info_dict[track_id]["current_score"] = np.mean(
@@ -235,5 +316,8 @@ def run_tracking_loop(
         cv2.imshow("YOLOv8 Tracking - Top 3 Ranked", annotated_frame)
         if cv2.waitKey(1) & 0xFF == ord("q"):
             break
+
+    # ── Log final metrics ──
+    metrics.print_summary()
 
     return mask_info_dict

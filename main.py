@@ -22,6 +22,7 @@ from models.model_loader import load_yolo, load_tabtransformer
 from core.tracker import run_tracking_loop
 from core.scorer import post_process
 from utils.device import get_device
+from utils.logger import setup_logger, get_logger
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -64,10 +65,12 @@ def process_video(
     blastocyst_model,
     device: str,
 ) -> None:
+    logger = get_logger()
     video_name = os.path.splitext(os.path.basename(video_path))[0]
-    print(f"\n{'='*60}")
-    print(f"Processing: {video_name}")
-    print(f"{'='*60}")
+    
+    logger.info("=" * 70)
+    logger.info(f"Processing video: {video_name}")
+    logger.info("=" * 70)
 
     # ── User prompts ──────────────────────────────────────────────
     opts = cfg["prompt_options"]
@@ -75,11 +78,11 @@ def process_video(
     magnification= prompt_choice("Select magnification:",       opts["magnifications"])
     solution_pct = prompt_choice("Select solution percentage:", opts["solution_percentages"])
 
-    print(f"\n  Clinic: {clinic} | Magnification: {magnification} | Solution: {solution_pct}")
+    logger.info(f"Video settings - Clinic: {clinic}, Magnification: {magnification}, Solution: {solution_pct}")
 
     # ── Video I/O ─────────────────────────────────────────────────
     cap, width, height, fps = open_video(video_path)
-    print(f"  Resolution: {width}x{height} @ {fps} fps")
+    logger.info(f"Video opened: {width}x{height} @ {fps} fps")
 
     writer = create_writer(
         video_path,
@@ -92,8 +95,10 @@ def process_video(
         morpho_scalers, motility_scalers,
         width, height, magnification, solution_pct,
     )
+    logger.info(f"Scaler parameters resolved for {magnification}@{solution_pct}")
 
     # ── Tracking loop ─────────────────────────────────────────────
+    logger.info("Starting tracking loop...")
     mask_info_dict = run_tracking_loop(
         cap=cap,
         writer=writer,
@@ -108,6 +113,7 @@ def process_video(
         filter_cfg=filter_cfg,
         cfg=cfg,
     )
+    logger.info(f"Tracking loop completed. Tracked {len(mask_info_dict)} sperm")
 
     cap.release()
     writer.release()
@@ -118,7 +124,7 @@ def process_video(
         data["video_name"] = video_name
 
     # ── Post-processing & CSV export ──────────────────────────────
-    print("\nRunning post-processing...")
+    logger.info("Running post-processing...")
     results = post_process(
         mask_info_dict=mask_info_dict,
         fps=fps,
@@ -133,7 +139,8 @@ def process_video(
     )
 
     export_csv(results, clinic, cfg["paths"]["data_results_dir"], video_name)
-    print(f"Done: {video_name}")
+    logger.info(f"CSV export completed: {cfg['paths']['data_results_dir']}/{video_name}.csv")
+    logger.info(f"✅ Completed: {video_name}")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -143,32 +150,47 @@ def main():
     parser.add_argument("--video", type=str, default=None, help="Path to a specific video file to process.")
     args = parser.parse_args()
 
+    # ── Initialize logging ──
+    setup_logger(log_dir="./logs")
+    logger = get_logger()
+    logger.info("=" * 70)
+    logger.info("SPERM TRACKING AND SCORING PIPELINE - STARTING")
+    logger.info("=" * 70)
+
     # Load config and shared assets (done once for all videos)
     cfg = load_config("config.yaml")
+    logger.info(f"Configuration loaded from config.yaml")
     device = get_device()
+    logger.info(f"Using device: {device}")
     morpho_scalers, motility_scalers = load_scalers(cfg)
+    logger.info(f"Morphology and motility scalers loaded")
     filter_cfg = load_filters(cfg)
+    logger.info(f"Filter configuration loaded")
 
     # Create output directories if needed
     os.makedirs(cfg["paths"]["videos_results_dir"], exist_ok=True)
     os.makedirs(cfg["paths"]["data_results_dir"], exist_ok=True)
+    logger.info(f"Output directories ready: {cfg['paths']['videos_results_dir']}, {cfg['paths']['data_results_dir']}")
 
     # Load models (done once, shared across all videos)
+    logger.info("Loading YOLO model...")
     yolo_model       = load_yolo(cfg["paths"]["yolo_model"])
+    logger.info("Loading TabTransformer model...")
     blastocyst_model = load_tabtransformer(cfg["paths"]["tabtransformer_model"], cfg, device)
+    logger.info("All models loaded successfully")
 
     if args.video:
         if not os.path.isfile(args.video):
-            print(f"Error: video file not found: {args.video}")
+            logger.error(f"Video file not found: {args.video}")
             return
         video_paths = [args.video]
+        logger.info(f"Processing single video: {args.video}")
     else:
         video_paths = discover_videos(cfg["paths"]["videos_dir"])
         if not video_paths:
-            print(f"No videos found in: {cfg['paths']['videos_dir']}")
+            logger.warning(f"No videos found in: {cfg['paths']['videos_dir']}")
             return
-
-    print(f"\nFound {len(video_paths)} video(s) to process.")
+        logger.info(f"Found {len(video_paths)} video(s) to process")
 
     for video_path in video_paths:
         process_video(
@@ -182,7 +204,10 @@ def main():
             device=device,
         )
 
-    print("\nAll videos processed.")
+    logger.info("=" * 70)
+    logger.info("PIPELINE COMPLETED SUCCESSFULLY")
+    logger.info("=" * 70)
+    logger.info(f"Log file saved to: ./logs/sperm_pipeline.log")
 
 
 if __name__ == "__main__":
