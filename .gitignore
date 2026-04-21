@@ -3,3 +3,6 @@ input_models
 scalers
 test_videos
 video_results
+.venv
+tmp
+*/__pycache__
